@@ -12,6 +12,7 @@ Clearing rules:
 """
 
 
+import heapq
 from tqdm import tqdm
 
 
@@ -79,7 +80,7 @@ def our_fill(bids, asks, our_side, our_price, our_qty):
                     remaining -= fill
             # Our order at this level (if applicable)
             if our_price == bp:
-                return cp, min(our_qty, remaining)
+                return cp, max(min(our_qty, remaining), 0)
 
         # 2. At clearing price level: existing orders first, then us
         for p, q in bids:
@@ -88,7 +89,7 @@ def our_fill(bids, asks, our_side, our_price, our_qty):
                 remaining -= fill
 
         if our_price == cp:
-            return cp, min(our_qty, remaining)
+            return cp, max(min(our_qty, remaining), 0)
 
         return cp, 0
 
@@ -104,7 +105,7 @@ def our_fill(bids, asks, our_side, our_price, our_qty):
                     fill = min(q, remaining)
                     remaining -= fill
             if our_price == ap:
-                return cp, min(our_qty, remaining)
+                return cp, max(min(our_qty, remaining), 0)
 
         # 2. At clearing price level: existing orders first, then us
         for p, q in asks:
@@ -113,89 +114,110 @@ def our_fill(bids, asks, our_side, our_price, our_qty):
                 remaining -= fill
 
         if our_price == cp:
-            return cp, min(our_qty, remaining)
+            return cp, max(min(our_qty, remaining), 0)
 
         return cp, 0
 
 
-def calc_profit(side, cp, filled, fair_value, auction_fee=0.05, guild_fee=0.10):
-    """Profit accounting for all fees.
-    BUY:  buy at cp + auction_fee, sell to guild at fair_value - guild_fee
-    SELL: sell at cp - auction_fee, buy back from guild at fair_value + guild_fee
+def calc_profit(side, cp, filled, fair_value, trading_fee=0.10):
+    """
+    Profit accounting for all fees.
+    BUY:  buy at cp, sell to guild at fair_value (minus trading_fee)
+    SELL: sell at cp, buy back from guild at fair_value (minus trading_fee)
     """
     if side == "BUY":
-        return (fair_value - guild_fee - cp - auction_fee) * filled
+        return (fair_value - cp - trading_fee) * filled
     else:
-        return (cp - auction_fee - fair_value - guild_fee) * filled
+        return (cp - fair_value - trading_fee) * filled
 
 
-def optimize(bids, asks, fair_value, max_qty=50):
+def optimize(bids, asks, fair_value, max_qty, trading_fee=0.10):
     """
     Find the optimal order to maximize profit accounting for fees.
+    Returns (best, top_candidates) where top_candidates is a sorted list of top 10.
     """
     all_prices = sorted(set(p for p, _ in bids) | set(p for p, _ in asks))
     if not all_prices:
         print("Empty orderbook!")
-        return
-
-    price_lo = min(all_prices) - 2
-    price_hi = max(all_prices) + 2
+        return None, []
 
     best = None
     best_profit = 0
+    top_10 = []  # min-heap of (profit, side, price, qty, cp, filled)
 
-    total = 2 * (price_hi - price_lo + 1) * max_qty
-    with tqdm(total=total, desc="Optimizing") as pbar:
+    price_lo = min(all_prices) - 3
+    price_hi = max(all_prices) + 3
+
+    with tqdm(desc="Optimizing") as pbar:
         for side in ["BUY", "SELL"]:
             for price in range(price_lo, price_hi + 1):
+                prev_filled = 0
                 for qty in range(1, max_qty + 1):
                     cp, filled = our_fill(bids, asks, side, price, qty)
                     pbar.update(1)
                     if cp is None or filled == 0:
                         continue
 
-                    profit = calc_profit(side, cp, filled, fair_value)
+                    # If fill didn't increase, more qty won't help
+                    if filled <= prev_filled:
+                        break
+                    prev_filled = filled
+
+                    profit = calc_profit(side, cp, filled, fair_value, trading_fee)
 
                     if profit > best_profit:
                         best_profit = profit
                         best = (side, price, qty, cp, filled, profit)
 
-    return best
+                    if profit > 0:
+                        entry = (profit, side, price, qty, cp, filled)
+                        if len(top_10) < 10:
+                            heapq.heappush(top_10, entry)
+                        elif profit > top_10[0][0]:
+                            heapq.heapreplace(top_10, entry)
+
+    top_candidates = sorted(top_10, reverse=True)
+    return best, top_candidates
 
 
 # ============================================================
 # ENTER YOUR ORDERBOOK AND FAIR VALUE HERE
 # ============================================================
 
-FAIR_VALUE = 20       # merchant guild buy price
-AUCTION_FEE = 0.05   # fee per unit traded in auction
-GUILD_FEE = 0.10     # fee per unit sold to merchant guild
+FAIR_VALUE = 30      # merchant guild buy price
+TRADING_FEE = 0      # fee per unit traded in auction
+MAX_QTY = 100000     # maximum quantity
 
 bids = [
     # (price, quantity),
-    (20, 43000),
-    (19, 17000),
-    (18, 6000),
-    (17, 5000),
-    (16, 10000),
-    (15, 5000),
-    (14, 10000),
-    (13, 7000)
+    (30, 30000),
+    (29, 5000),
+    (28, 12000),
+    (27, 28000),
+    # (20, 43000),
+    # (19, 17000),
+    # (18, 6000),
+    # (17, 5000),
+    # (16, 10000),
+    # (15, 5000),
+    # (14, 10000),
+    # (13, 7000),
 ]
 
 asks = [
     # (price, quantity),
-    (12, 20000),
-    (13, 25000),
-    (14, 35000),
-    (15, 6000),
-    (16, 5000),
-    (17, 0),
-    (18, 10000),
-    (19, 12000),
+    (28, 40000),
+    (31, 20000),
+    (32, 20000),
+    (33, 30000),
+    # (12, 20000),
+    # (13, 25000),
+    # (14, 35000),
+    # (15, 6000),
+    # (16, 5000),
+    # (18, 10000),
+    # (19, 12000),
 ]
-
-MAX_QTY = 100000
 
 if __name__ == "__main__":
     print("=" * 50)
@@ -211,7 +233,7 @@ if __name__ == "__main__":
     print()
 
     # Optimize
-    result = optimize(bids, asks, FAIR_VALUE, MAX_QTY)
+    result, top_candidates = optimize(bids, asks, FAIR_VALUE, MAX_QTY, TRADING_FEE)
 
     if result:
         side, price, qty, cp, filled, profit = result
@@ -231,23 +253,6 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("TOP 10 ORDERS BY PROFIT")
     print("=" * 50)
-
-    all_prices = sorted(set(p for p, _ in bids) | set(p for p, _ in asks))
-    candidates = []
-    total2 = 2 * (max(all_prices) + 3 - (min(all_prices) - 2)) * MAX_QTY
-    with tqdm(total=total2, desc="Top 10 scan") as pbar:
-      for side in ["BUY", "SELL"]:
-        for price in range(min(all_prices) - 2, max(all_prices) + 3):
-            for qty in range(1, MAX_QTY + 1):
-                cp, filled = our_fill(bids, asks, side, price, qty)
-                pbar.update(1)
-                if cp is None or filled == 0:
-                    continue
-                profit = calc_profit(side, cp, filled, FAIR_VALUE)
-                if profit > 0:
-                    candidates.append((profit, side, price, qty, cp, filled))
-
-    candidates.sort(reverse=True)
     print(f"{'Profit':>8}  {'Side':<5} {'Price':>6} {'Qty':>5} {'CP':>6} {'Filled':>7}")
-    for profit, side, price, qty, cp, filled in candidates[:10]:
+    for profit, side, price, qty, cp, filled in top_candidates:
         print(f"{profit:>8.1f}  {side:<5} {price:>6} {qty:>5} {cp:>6} {filled:>7}")

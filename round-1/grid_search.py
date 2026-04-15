@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import os
 
-# ── Config ──────────────────────────────────────────────────────────────
+# Config
 PARAM_NAME = "FLATTEN_THRESHOLD"
 GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 SOURCE_FILE = "round-1-v0.py"
@@ -21,7 +21,7 @@ VENV_PYTHON = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "venv", "bin", "prosperity4btest"
 )
 
-# ── Helpers ─────────────────────────────────────────────────────────────
+# Helpers
 def run_backtest(filepath: str) -> dict:
     result = subprocess.run(
         [VENV_PYTHON, filepath, ROUND],
@@ -44,7 +44,6 @@ def run_backtest(filepath: str) -> dict:
 
     return {"sharpe": sharpe, "pnl": pnl, "days": day_pnls, "output": output}
 
-
 def patch_file(src: str, param: str, value: float) -> str:
     """Create a temp copy with the parameter patched."""
     with open(src, "r") as f:
@@ -58,8 +57,7 @@ def patch_file(src: str, param: str, value: float) -> str:
     tmp.close()
     return tmp.name
 
-
-# ── Main ────────────────────────────────────────────────────────────────
+# Main
 def main():
     print(f"Grid search: {PARAM_NAME} over {GRID}")
     print(f"Optimizing: {METRIC.upper()}")
@@ -91,7 +89,6 @@ def main():
         print(f"BEST: {PARAM_NAME}={best[0]:.2f}  {METRIC.upper()}={best[1]:.4f}  PnL={best[2]:,.0f}")
     else:
         print("No valid results.")
-
 
 if __name__ == "__main__":
     main()
