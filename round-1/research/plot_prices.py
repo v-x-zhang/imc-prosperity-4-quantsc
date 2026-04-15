@@ -80,6 +80,6 @@ for ax in axes:
         ax.axvline(t, color="gray", linestyle="--", alpha=0.4, linewidth=0.8)
 
 plt.tight_layout()
-plt.savefig(os.path.join(os.path.dirname(__file__), "round1_price_analysis.png"), dpi=150)
+plt.savefig(os.path.join(os.path.dirname(__file__), "round_1_price_analysis.png"), dpi=150)
 plt.show()
 print("Saved to round1_price_analysis.png")

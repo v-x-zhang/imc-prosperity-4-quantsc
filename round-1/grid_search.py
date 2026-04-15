@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grid search over FLATTEN_THRESHOLD in round-1-v0.py."""
+"""Grid search over given parameter in round_1_min.py."""
 
 import subprocess
 import re
@@ -9,16 +9,16 @@ import tempfile
 import os
 
 # Config
-PARAM_NAME = "FLATTEN_THRESHOLD"
+PARAM_NAME = "IMB_THRESH"
 GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-SOURCE_FILE = "round-1-v0.py"
+SOURCE_FILE = "round_1_min.py"
 ROUND = "1"
 
 # "sharpe" or "pnl"
 METRIC = sys.argv[1] if len(sys.argv) > 1 else "sharpe"
 
 VENV_PYTHON = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "venv", "bin", "prosperity4btest"
+    os.path.dirname(os.path.abspath(__file__)), "..", "venv", "Scripts", "prosperity4btest.exe"
 )
 
 # Helpers
