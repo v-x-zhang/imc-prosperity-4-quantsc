@@ -124,32 +124,31 @@ class Logger:
 logger = Logger()
 
 
-# Layered ASH strategy. Bump `LAYER` to enable successive ideas:
-#   0: empty trader (baseline)
-#   1: take any ask < 10_000 / bid > 10_000  (mean-reversion edge only)
-#   2: +passive pennying inside 10_000 ± W
-#   3: +flatten-at-theo when |pos| > threshold (backstop taker)
-#   4: +microprice-blended theo for quote placement
+# Baseline: accumulate PEPPER long up to limit, always bidding at int(theo).
+# theo = anchor + PEPPER_SLOPE * (t - t0), where anchor is the first observed two-sided mid rounded to the nearest 1000. 
+# Each tick we submit one buy at int(theo) for the remaining buy_room — crosses sub-theo asks when available, otherwise rests as a passive bid that improves the market.
 
 class Trader:
     POSITION_LIMITS = {"ASH_COATED_OSMIUM": 80, "INTARIAN_PEPPER_ROOT": 80}
-    DISABLED_PRODUCTS = {"INTARIAN_PEPPER_ROOT"}
-    ASH_ANCHOR = 10_000
+    DISABLED_PRODUCTS = {"ASH_COATED_OSMIUM"}
+    PEPPER_SLOPE = 0.001
+    PEPPER_ANCHOR_ROUND = 1000
 
-    LAYER = 4
-    W = 1                    # L2
-    FLATTEN_THRESHOLD = 0.2  # L3
-    MICROPRICE_LAM = 0.8     # L4
+    def get_mid(self, order_depth: OrderDepth):
+        if order_depth.buy_orders and order_depth.sell_orders:
+            return (max(order_depth.buy_orders.keys()) + min(order_depth.sell_orders.keys())) / 2
+        return None
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result: dict[Symbol, list[Order]] = {}
         conversions = 0
-        trader_data = ""
 
-        # Layer 0: empty baseline.
-        if self.LAYER == 0:
-            logger.flush(state, result, conversions, trader_data)
-            return result, conversions, trader_data
+        trader_state: dict[str, Any] = {}
+        if state.traderData:
+            try:
+                trader_state = json.loads(state.traderData)
+            except Exception:
+                trader_state = {}
 
         for product in state.order_depths:
             if product in self.DISABLED_PRODUCTS:
@@ -161,105 +160,25 @@ class Trader:
             pos = state.position.get(product, 0)
             limit = self.POSITION_LIMITS[product]
 
-            anchor = self.ASH_ANCHOR
+            mid = self.get_mid(order_depth)
             buy_room = limit - pos
-            sell_room = limit + pos
 
-            # Mutable copy of the book — we decrement levels as we aggress so that
-            # the passive layer sees the post-take BBO / volumes.
-            book_bids = dict(order_depth.buy_orders)   # price -> +qty
-            book_asks = dict(order_depth.sell_orders)  # price -> -qty
+            # Lock anchor to the nearest multiple of ANCHOR_ROUND on first valid mid.
+            if "pepper_anchor" not in trader_state and mid is not None:
+                trader_state["pepper_anchor"] = round(mid / self.PEPPER_ANCHOR_ROUND) * self.PEPPER_ANCHOR_ROUND
+                trader_state["pepper_t0"] = state.timestamp
 
-            # ---------- Aggressive takes ----------
-            # L1: simple rule (ask < anchor, bid > anchor).
-            if book_asks:
-                for ask_price in sorted(book_asks.keys()):
-                    if buy_room <= 0:
-                        break
+            theo = None
+            if "pepper_anchor" in trader_state:
+                theo = trader_state["pepper_anchor"] + (state.timestamp - trader_state["pepper_t0"]) * self.PEPPER_SLOPE
+                trader_state["last_theo"] = theo
 
-                    take = ask_price < anchor
-
-                    # L3+: also take AT anchor when we're too short, to flatten.
-                    flatten = (
-                        self.LAYER >= 3
-                        and ask_price == anchor
-                        and pos < -limit * self.FLATTEN_THRESHOLD
-                    )
-
-                    if take or flatten:
-                        avail = -book_asks[ask_price]
-                        qty = min(avail, buy_room)
-                        if flatten and not take:
-                            qty = min(qty, -pos)
-                        if qty > 0:
-                            orders.append(Order(product, ask_price, qty))
-                            buy_room -= qty
-                            book_asks[ask_price] += qty
-                            if book_asks[ask_price] == 0:
-                                del book_asks[ask_price]
-                    else:
-                        break
-
-            if book_bids:
-                for bid_price in sorted(book_bids.keys(), reverse=True):
-                    if sell_room <= 0:
-                        break
-
-                    take = bid_price > anchor
-
-                    flatten = (
-                        self.LAYER >= 3
-                        and bid_price == anchor
-                        and pos > limit * self.FLATTEN_THRESHOLD
-                    )
-
-                    if take or flatten:
-                        avail = book_bids[bid_price]
-                        qty = min(avail, sell_room)
-                        if flatten and not take:
-                            qty = min(qty, pos)
-                        if qty > 0:
-                            orders.append(Order(product, bid_price, -qty))
-                            sell_room -= qty
-                            book_bids[bid_price] -= qty
-                            if book_bids[bid_price] == 0:
-                                del book_bids[bid_price]
-                    else:
-                        break
-
-            # Post-aggression BBO — this is what the passive layer quotes against.
-            best_bid = max(book_bids.keys()) if book_bids else None
-            best_ask = min(book_asks.keys()) if book_asks else None
-            bid_vol = book_bids[best_bid] if best_bid is not None else 0
-            ask_vol = -book_asks[best_ask] if best_ask is not None else 0
-
-            # ---------- Passive quoting (L2+) ----------
-            if self.LAYER >= 2:
-                # L4+: blend anchor with microprice for quote center.
-                if self.LAYER >= 4 and best_bid is not None and best_ask is not None and (bid_vol + ask_vol) > 0:
-                    microprice = (best_ask * bid_vol + best_bid * ask_vol) / (bid_vol + ask_vol)
-                    theo_quote = self.MICROPRICE_LAM * anchor + (1 - self.MICROPRICE_LAM) * microprice
-                else:
-                    theo_quote = float(anchor)
-
-                # Where to post — inside best book but no further than theo ± W.
-                target_bid = int(theo_quote - self.W)
-                target_ask = int(theo_quote + self.W)
-                if best_bid is not None:
-                    target_bid = min(best_bid + 1, target_bid)
-                if best_ask is not None:
-                    target_ask = max(best_ask - 1, target_ask)
-
-                # Symmetric sizing — full available room on each side.
-                bid_qty = buy_room
-                ask_qty = sell_room
-
-                if bid_qty > 0:
-                    orders.append(Order(product, target_bid, bid_qty))
-                if ask_qty > 0:
-                    orders.append(Order(product, target_ask, -ask_qty))
+            # Always bid at int(theo). Crosses any sub-theo asks; otherwise rests passively.
+            if theo is not None and buy_room > 0:
+                orders.append(Order(product, int(theo), buy_room))
 
             result[product] = orders
 
+        trader_data = json.dumps(trader_state)
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data

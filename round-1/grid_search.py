@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Grid search over given parameter in round_1_min.py."""
+"""Grid search over given parameter and round."""
 
 import subprocess
 import re
@@ -9,9 +9,9 @@ import tempfile
 import os
 
 # Config
-PARAM_NAME = "IMB_THRESH"
+PARAM_NAME = "FLATTEN_THRESHOLD"
 GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-SOURCE_FILE = "round_1_min.py"
+SOURCE_FILE = "round_1_pepper.py"
 ROUND = "1"
 
 # "sharpe" or "pnl"
