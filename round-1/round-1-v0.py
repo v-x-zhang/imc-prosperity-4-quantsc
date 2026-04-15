@@ -142,6 +142,11 @@ class Trader:
         "INTARIAN_PEPPER_ROOT": 80,
     }
 
+    DISABLED_PRODUCTS = {"INTARIAN_PEPPER_ROOT"}
+
+    # Fraction of position limit beyond which we hit theo to flatten
+    FLATTEN_THRESHOLD = 0.5
+
     def get_mid(self, order_depth: OrderDepth) -> float:
         best_bid = max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None
         best_ask = min(order_depth.sell_orders.keys()) if order_depth.sell_orders else None
@@ -161,6 +166,9 @@ class Trader:
                 trader_state = {}
 
         for product in state.order_depths:
+            if product in self.DISABLED_PRODUCTS:
+                result[product] = []
+                continue
             order_depth: OrderDepth = state.order_depths[product]
             orders: list[Order] = []
             pos = state.position.get(product, 0)
@@ -185,6 +193,7 @@ class Trader:
             sell_room = limit + pos
 
             # === 1. Aggressive: take everything priced better than theo ===
+            # Also hit theo-priced orders when we need to flatten inventory
             if order_depth.sell_orders:
                 for ask_price in sorted(order_depth.sell_orders.keys()):
                     if ask_price < theo and buy_room > 0:
@@ -192,6 +201,13 @@ class Trader:
                         qty = min(ask_vol, buy_room)
                         orders.append(Order(product, ask_price, qty))
                         buy_room -= qty
+                    elif ask_price == theo and pos < -limit * self.FLATTEN_THRESHOLD and buy_room > 0:
+                        # We're short past threshold — buy at theo to flatten
+                        ask_vol = -order_depth.sell_orders[ask_price]
+                        qty = min(ask_vol, buy_room, -pos)
+                        if qty > 0:
+                            orders.append(Order(product, ask_price, qty))
+                            buy_room -= qty
                     else:
                         break
 
@@ -202,6 +218,13 @@ class Trader:
                         qty = min(bid_vol, sell_room)
                         orders.append(Order(product, bid_price, -qty))
                         sell_room -= qty
+                    elif bid_price == theo and pos > limit * self.FLATTEN_THRESHOLD and sell_room > 0:
+                        # We're long past threshold — sell at theo to flatten
+                        bid_vol = order_depth.buy_orders[bid_price]
+                        qty = min(bid_vol, sell_room, pos)
+                        if qty > 0:
+                            orders.append(Order(product, bid_price, -qty))
+                            sell_room -= qty
                     else:
                         break
 
@@ -219,8 +242,8 @@ class Trader:
             else:
                 penny_ask = int(theo) + 1
 
-            bid_frac = (limit - pos) / (2 * limit)
-            ask_frac = (limit + pos) / (2 * limit)
+            bid_frac = 0.5
+            ask_frac = 0.5
 
             bid_qty = min(int(buy_room * (0.5 + bid_frac)), buy_room)
             ask_qty = min(int(sell_room * (0.5 + ask_frac)), sell_room)
