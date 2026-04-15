@@ -2,4 +2,7 @@ venv/
 
 **/__pycache__/
 
+round-1/submissions
+round-1/backtests
+
 .DS_Store
