@@ -1,18 +1,146 @@
-from datamodel import OrderDepth, TradingState, Order
-from typing import List, Dict
-import jsonpickle
+import json
+from typing import Any
+
+from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+
+
+class Logger:
+    def __init__(self) -> None:
+        self.logs = ""
+        self.max_log_length = 3750
+
+    def print(self, *objects: Any, sep: str = " ", end: str = "\n") -> None:
+        self.logs += sep.join(map(str, objects)) + end
+
+    def flush(self, state: TradingState, orders: dict[Symbol, list[Order]], conversions: int, trader_data: str) -> None:
+        base_length = len(
+            self.to_json(
+                [
+                    self.compress_state(state, ""),
+                    self.compress_orders(orders),
+                    conversions,
+                    "",
+                    "",
+                ]
+            )
+        )
+
+        # We truncate state.traderData, trader_data, and self.logs to the same max. length to fit the log limit
+        max_item_length = (self.max_log_length - base_length) // 3
+
+        print(
+            self.to_json(
+                [
+                    self.compress_state(state, self.truncate(state.traderData, max_item_length)),
+                    self.compress_orders(orders),
+                    conversions,
+                    self.truncate(trader_data, max_item_length),
+                    self.truncate(self.logs, max_item_length),
+                ]
+            )
+        )
+
+        self.logs = ""
+
+    def compress_state(self, state: TradingState, trader_data: str) -> list[Any]:
+        return [
+            state.timestamp,
+            trader_data,
+            self.compress_listings(state.listings),
+            self.compress_order_depths(state.order_depths),
+            self.compress_trades(state.own_trades),
+            self.compress_trades(state.market_trades),
+            state.position,
+            self.compress_observations(state.observations),
+        ]
+
+    def compress_listings(self, listings: dict[Symbol, Listing]) -> list[list[Any]]:
+        compressed = []
+        for listing in listings.values():
+            compressed.append([listing.symbol, listing.product, listing.denomination])
+
+        return compressed
+
+    def compress_order_depths(self, order_depths: dict[Symbol, OrderDepth]) -> dict[Symbol, list[Any]]:
+        compressed = {}
+        for symbol, order_depth in order_depths.items():
+            compressed[symbol] = [order_depth.buy_orders, order_depth.sell_orders]
+
+        return compressed
+
+    def compress_trades(self, trades: dict[Symbol, list[Trade]]) -> list[list[Any]]:
+        compressed = []
+        for arr in trades.values():
+            for trade in arr:
+                compressed.append(
+                    [
+                        trade.symbol,
+                        trade.price,
+                        trade.quantity,
+                        trade.buyer,
+                        trade.seller,
+                        trade.timestamp,
+                    ]
+                )
+
+        return compressed
+
+    def compress_observations(self, observations: Observation) -> list[Any]:
+        conversion_observations = {}
+        for product, observation in observations.conversionObservations.items():
+            conversion_observations[product] = [
+                observation.bidPrice,
+                observation.askPrice,
+                observation.transportFees,
+                observation.exportTariff,
+                observation.importTariff,
+                observation.sugarPrice,
+                observation.sunlightIndex,
+            ]
+
+        return [observations.plainValueObservations, conversion_observations]
+
+    def compress_orders(self, orders: dict[Symbol, list[Order]]) -> list[list[Any]]:
+        compressed = []
+        for arr in orders.values():
+            for order in arr:
+                compressed.append([order.symbol, order.price, order.quantity])
+
+        return compressed
+
+    def to_json(self, value: Any) -> str:
+        return json.dumps(value, cls=ProsperityEncoder, separators=(",", ":"))
+
+    def truncate(self, value: str, max_length: int) -> str:
+        lo, hi = 0, min(len(value), max_length)
+        out = ""
+
+        while lo <= hi:
+            mid = (lo + hi) // 2
+
+            candidate = value[:mid]
+            if len(candidate) < len(value):
+                candidate += "..."
+
+            encoded_candidate = json.dumps(candidate)
+
+            if len(encoded_candidate) <= max_length:
+                out = candidate
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        return out
+
+
+logger = Logger()
+
 
 class Trader:
-    POSITION_LIMITS: Dict[str, int] = {
+    POSITION_LIMITS = {
         "ASH_COATED_OSMIUM": 80,
         "INTARIAN_PEPPER_ROOT": 80,
     }
-
-    # How wide to quote around theo
-    SPREAD = 2
-
-    def bid(self):
-        return 15
 
     def get_mid(self, order_depth: OrderDepth) -> float:
         best_bid = max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None
@@ -21,36 +149,20 @@ class Trader:
             return (best_bid + best_ask) / 2
         return best_bid or best_ask or 0
 
-    def get_vwap_mid(self, order_depth: OrderDepth) -> float:
-        """Volume-weighted average price across all bid and ask levels."""
-        total_vol = 0
-        total_pv = 0
-        for price, vol in order_depth.buy_orders.items():
-            # buy_orders have positive volumes
-            total_pv += price * vol
-            total_vol += vol
-        for price, vol in order_depth.sell_orders.items():
-            # sell_orders have negative volumes, flip sign
-            total_pv += price * (-vol)
-            total_vol += (-vol)
-        if total_vol > 0:
-            return total_pv / total_vol
-        return self.get_mid(order_depth)
-
-    def run(self, state: TradingState):
-        result: Dict[str, List[Order]] = {}
+    def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
+        result = {}
 
         # Restore state
         trader_state = {}
         if state.traderData:
             try:
-                trader_state = jsonpickle.decode(state.traderData)
+                trader_state = json.loads(state.traderData)
             except:
                 trader_state = {}
 
         for product in state.order_depths:
             order_depth: OrderDepth = state.order_depths[product]
-            orders: List[Order] = []
+            orders: list[Order] = []
             pos = state.position.get(product, 0)
             limit = self.POSITION_LIMITS.get(product, 50)
             mid = self.get_mid(order_depth)
@@ -59,7 +171,6 @@ class Trader:
             if product == "ASH_COATED_OSMIUM":
                 theo = 10_000
             elif product == "INTARIAN_PEPPER_ROOT":
-                # Anchor to first observed mid, then drift +1 per 1000 timestamps
                 key = "pepper_anchor"
                 if key not in trader_state:
                     trader_state[key] = mid
@@ -74,8 +185,6 @@ class Trader:
             sell_room = limit + pos
 
             # === 1. Aggressive: take everything priced better than theo ===
-
-            # Buy all asks below theo
             if order_depth.sell_orders:
                 for ask_price in sorted(order_depth.sell_orders.keys()):
                     if ask_price < theo and buy_room > 0:
@@ -86,7 +195,6 @@ class Trader:
                     else:
                         break
 
-            # Sell into all bids above theo
             if order_depth.buy_orders:
                 for bid_price in sorted(order_depth.buy_orders.keys(), reverse=True):
                     if bid_price > theo and sell_room > 0:
@@ -97,17 +205,10 @@ class Trader:
                     else:
                         break
 
-            # === 2. Passive market making: skew sizes toward flat position ===
-            # Quote tighter than the book, but skew qty to cycle inventory
-            #
-            # If we're long, we want to sell more than buy -> lean the ask
-            # If we're short, we want to buy more than sell -> lean the bid
-            # This keeps us turning over inventory instead of sitting at max position
-
+            # === 2. Passive: inventory-skewed penny quoting ===
             best_bid = max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None
             best_ask = min(order_depth.sell_orders.keys()) if order_depth.sell_orders else None
 
-            # Penny the book but clamp to theo
             if best_bid is not None:
                 penny_bid = min(best_bid + 1, int(theo) - 1)
             else:
@@ -118,10 +219,8 @@ class Trader:
             else:
                 penny_ask = int(theo) + 1
 
-            # Skew: when long, bid less and ask more; when short, reverse
-            # At pos=0, split evenly. At pos=+limit, bid 0 and ask full.
-            bid_frac = (limit - pos) / (2 * limit)  # 1.0 when short limit, 0.0 when long limit
-            ask_frac = (limit + pos) / (2 * limit)  # 1.0 when long limit, 0.0 when short limit
+            bid_frac = (limit - pos) / (2 * limit)
+            ask_frac = (limit + pos) / (2 * limit)
 
             bid_qty = min(int(buy_room * (0.5 + bid_frac)), buy_room)
             ask_qty = min(int(sell_room * (0.5 + ask_frac)), sell_room)
@@ -134,6 +233,8 @@ class Trader:
 
             result[product] = orders
 
-        traderData = jsonpickle.encode(trader_state)
+        trader_data = json.dumps(trader_state)
         conversions = 0
-        return result, conversions, traderData
+
+        logger.flush(state, result, conversions, trader_data)
+        return result, conversions, trader_data
