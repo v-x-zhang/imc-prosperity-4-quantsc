@@ -9,9 +9,9 @@ import tempfile
 import os
 
 # Config
-PARAM_NAME = "FLATTEN_THRESHOLD"
-GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-SOURCE_FILE = "round_1_pepper.py"
+PARAM_NAME = "ANCHOR_WIDTH"
+GRID = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+SOURCE_FILE = "round_1_ash_v1.py"
 ROUND = "1"
 
 # "sharpe" or "pnl"
