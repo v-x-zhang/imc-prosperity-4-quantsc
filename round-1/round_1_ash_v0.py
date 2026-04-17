@@ -136,7 +136,7 @@ class Trader:
     DISABLED_PRODUCTS = {"INTARIAN_PEPPER_ROOT"}
     ASH_ANCHOR = 10_000
 
-    LAYER = 1
+    LAYER = 4
     W = 1                    # L2
     FLATTEN_THRESHOLD = 0.2  # L3
     MICROPRICE_LAM = 0.8     # L4

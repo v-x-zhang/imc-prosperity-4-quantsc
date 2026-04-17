@@ -124,20 +124,22 @@ class Logger:
 logger = Logger()
 
 
-# Layered ASH strategy (v1). Bump `LAYER` to enable successive ideas:
-#   0: empty trader (baseline)
-#   1: take any ask <= anchor - ANCHOR_WIDTH, take any bid >= anchor + ANCHOR_WIDTH.
-#      Anchor source is toggled via ANCHOR_MODE:
-#        "constant" -> fixed CONSTANT_ANCHOR (10_000)
-#        "ewma"     -> per-product EWMA of mid price (seeded on first tick)
-#   2: +flatten layer. When |pos| > FLATTEN_THRESHOLD, run a second take pass with
-#      a tighter width (FLATTEN_WIDTH < ANCHOR_WIDTH) on the side that reduces
-#      position, shedding inventory down to ±FLATTEN_THRESHOLD. Buys less edge
-#      per flatten trade but frees capacity for the next L1 opportunity.
-#   3: +conditional pennying. After L1/L2 consume liquidity, look at the residual
-#      BBO. Post a passive buy at best_bid + 1 only if that penny price still sits
-#      at or below anchor - QUOTE_EDGE; symmetric for asks. Skips pennying when
-#      the BBO is already tight against theo (no edge) or when L1 just swept a side.
+# Layered ASH strategy (v2). Same three layers as v1, but ANCHOR_WIDTH,
+# FLATTEN_WIDTH, and QUOTE_EDGE are adjusted asymmetrically based on current
+# inventory (pos_ratio = pos / limit in [-1, 1]):
+#
+#   buy-side width  = base + SKEW * pos_ratio   (wider when long → harder to add)
+#   sell-side width = base - SKEW * pos_ratio   (tighter when long → easier to shed)
+#
+#   buy-side flatten width  = FLATTEN_WIDTH + FLATTEN_WIDTH_SKEW * pos_ratio
+#   sell-side flatten width = FLATTEN_WIDTH - FLATTEN_WIDTH_SKEW * pos_ratio
+#       (flatten floors/ceilings migrate toward worse prices as |pos| grows)
+#
+#   buy-side quote edge  = QUOTE_EDGE + QUOTE_EDGE_SKEW * pos_ratio
+#   sell-side quote edge = QUOTE_EDGE - QUOTE_EDGE_SKEW * pos_ratio
+#       (penny quotes require more edge on the add side, less on the shed side)
+#
+# All widths are floored at 0 so they can't invert the inequalities.
 
 class Trader:
     POSITION_LIMITS = {"ASH_COATED_OSMIUM": 80, "INTARIAN_PEPPER_ROOT": 80}
@@ -145,19 +147,22 @@ class Trader:
 
     LAYER = 3
 
-    # L1 take thresholds — symmetric around the anchor.
+    # L1 take thresholds — base widths, skewed by pos_ratio.
     ANCHOR_MODE = "ewma"      # "constant" or "ewma"
     CONSTANT_ANCHOR = 10_000  # price level that anchor is fixed at when ANCHOR_MODE = "constant"
-    EWMA_SPAN = 500         # ticks; alpha = 2 / (span + 1)
-    ANCHOR_WIDTH = 2          # buy when ask <= anchor - width, sell when bid >= anchor + width
+    EWMA_SPAN = 500           # ticks; alpha = 2 / (span + 1)
+    ANCHOR_WIDTH = 2          # base width; effective side width = base ± SKEW * pos_ratio
+    ANCHOR_WIDTH_SKEW = 2     # how much the take width stretches/shrinks at |pos_ratio| = 1
 
     # L2 flatten thresholds — kicks in only when inventory is already heavy.
     FLATTEN_THRESHOLD = 40    # start flattening once |pos| exceeds this, target = ±FLATTEN_THRESHOLD
-    FLATTEN_WIDTH = 0         # sell at bid >= anchor + FLATTEN_WIDTH / buy at ask <= anchor - FLATTEN_WIDTH
+    FLATTEN_WIDTH = 0         # base flatten width; shrinks as |pos| grows past threshold
+    FLATTEN_WIDTH_SKEW = 0    # at |pos_ratio| = 1 the flatten width moves by this much
 
-    # L3 conditional pennying — only post a passive quote when the penny price
-    # itself is at least QUOTE_EDGE away from the anchor (else no edge to earn).
+    # L3 conditional pennying — base edge, skewed by pos_ratio so the add-side
+    # quote demands more edge and the shed-side quote demands less.
     QUOTE_EDGE = 3
+    QUOTE_EDGE_SKEW = 0
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result: dict[Symbol, list[Order]] = {}
@@ -214,8 +219,12 @@ class Trader:
                 result[product] = orders
                 continue
 
-            lower_anchor = anchor - self.ANCHOR_WIDTH
-            upper_anchor = anchor + self.ANCHOR_WIDTH
+            # Inventory-aware widths: buy side widens when long, sell side tightens.
+            pos_ratio = pos / limit if limit > 0 else 0.0
+            buy_anchor_width = max(0.0, self.ANCHOR_WIDTH + self.ANCHOR_WIDTH_SKEW * pos_ratio)
+            sell_anchor_width = max(0.0, self.ANCHOR_WIDTH - self.ANCHOR_WIDTH_SKEW * pos_ratio)
+            lower_anchor = anchor - buy_anchor_width
+            upper_anchor = anchor + sell_anchor_width
 
             # Mutable copy of the book — decrement levels as we aggress so that
             # later layers see the post-take BBO / volumes.
@@ -260,8 +269,12 @@ class Trader:
             # ---------- L2: flatten when |pos| > FLATTEN_THRESHOLD ----------
             # Only trades on the side that reduces |pos|, and only down to ±FLATTEN_THRESHOLD.
             if self.LAYER >= 2:
-                flatten_sell_floor = anchor + self.FLATTEN_WIDTH  # accept bids >= this when long
-                flatten_buy_ceil = anchor - self.FLATTEN_WIDTH    # accept asks <= this when short
+                # When long (pos_ratio > 0), shrink the sell-side flatten width so we
+                # accept worse bids; symmetric for short on the buy side.
+                flatten_sell_width = self.FLATTEN_WIDTH - self.FLATTEN_WIDTH_SKEW * pos_ratio
+                flatten_buy_width = self.FLATTEN_WIDTH + self.FLATTEN_WIDTH_SKEW * pos_ratio
+                flatten_sell_floor = anchor + flatten_sell_width  # accept bids >= this when long
+                flatten_buy_ceil = anchor - flatten_buy_width     # accept asks <= this when short
 
                 if pos > self.FLATTEN_THRESHOLD and book_bids:
                     shed_room = pos - self.FLATTEN_THRESHOLD
@@ -305,17 +318,23 @@ class Trader:
             # Quote a penny inside the residual BBO, but only if the penny price
             # still sits at least QUOTE_EDGE from anchor (else no edge to earn).
             if self.LAYER >= 3:
+                # L2 flattening may have reduced |pos|; recompute pos_ratio so the
+                # L3 edge reflects inventory after takes and flattens.
+                post_pos_ratio = pos / limit if limit > 0 else 0.0
+                buy_quote_edge = max(0.0, self.QUOTE_EDGE + self.QUOTE_EDGE_SKEW * post_pos_ratio)
+                sell_quote_edge = max(0.0, self.QUOTE_EDGE - self.QUOTE_EDGE_SKEW * post_pos_ratio)
+
                 post_bid = max(book_bids.keys()) if book_bids else None
                 post_ask = min(book_asks.keys()) if book_asks else None
 
                 if post_bid is not None and buy_room > 0:
                     quote_bid = post_bid + 1
-                    if quote_bid <= anchor - self.QUOTE_EDGE:
+                    if quote_bid <= anchor - buy_quote_edge:
                         orders.append(Order(product, quote_bid, buy_room))
 
                 if post_ask is not None and sell_room > 0:
                     quote_ask = post_ask - 1
-                    if quote_ask >= anchor + self.QUOTE_EDGE:
+                    if quote_ask >= anchor + sell_quote_edge:
                         orders.append(Order(product, quote_ask, -sell_room))
 
             result[product] = orders

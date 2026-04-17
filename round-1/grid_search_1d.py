@@ -9,8 +9,8 @@ import tempfile
 import os
 
 # Config
-PARAM_NAME = "ANCHOR_WIDTH"
-GRID = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+PARAM_NAME = "EWMA_SPAN"
+GRID = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 SOURCE_FILE = "round_1_ash_v1.py"
 ROUND = "1"
 
