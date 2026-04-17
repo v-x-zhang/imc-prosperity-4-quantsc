@@ -1,8 +1,7 @@
 import numpy as np
-from scipy.optimize import minimize_scalar
 
 BUDGET = 100
-SPEED_INVESTMENT = 10  
+SPEED_INVESTMENT = 10
 SPEED_MULTIPLIER = 0.3
 
 
@@ -24,25 +23,23 @@ def net_pnl(research_invest, speed_invest, speed_mult):
 
 def optimize(speed_invest, speed_mult):
     remaining = BUDGET - speed_invest
-
-    def neg_pnl(research_invest):
-        scale_invest = remaining - research_invest
-        if scale_invest < 0:
-            return np.inf
-        return -(research(research_invest) * scale(scale_invest) * speed_mult - BUDGET)
-
-    result = minimize_scalar(neg_pnl, bounds=(0, remaining), method="bounded")
-    best_research = result.x
+    best_research = 0
+    best_pnl = -np.inf
+    for r in range(0, remaining + 1):
+        s = remaining - r
+        pnl = research(r) * scale(s) * speed_mult - BUDGET
+        if pnl > best_pnl:
+            best_pnl = pnl
+            best_research = r
     best_scale = remaining - best_research
-    best_pnl = -result.fun
     return best_research, best_scale, best_pnl
 
 
 if __name__ == "__main__":
     r, s, pnl = optimize(SPEED_INVESTMENT, SPEED_MULTIPLIER)
-    print(f"Speed investment:    {SPEED_INVESTMENT:.2f} (multiplier: {SPEED_MULTIPLIER})")
-    print(f"Research investment: {r:.2f}")
-    print(f"Scale investment:    {s:.2f}")
+    print(f"Speed investment:    {SPEED_INVESTMENT} (multiplier: {SPEED_MULTIPLIER})")
+    print(f"Research investment: {r}")
+    print(f"Scale investment:    {s}")
     print(f"Research value:      {research(r):.2f}")
     print(f"Scale value:         {scale(s):.4f}")
     print(f"Gross PnL:           {research(r) * scale(s) * SPEED_MULTIPLIER:.2f}")
