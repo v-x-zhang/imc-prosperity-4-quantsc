@@ -219,7 +219,7 @@ class Trader:
             orders.extend(take_orders)
 
         if self.ASH_MODE in ("make", "both"):
-            orders.extend(self._ash_make(bids, asks, buy_room, sell_room, product))
+            orders.extend(self._ash_make(bids, asks, buy_room, sell_room, product, theo))
 
         return orders
 
@@ -256,8 +256,22 @@ class Trader:
 
         return orders, buy_room, sell_room
 
-    def _ash_make(self, bids: dict[int, int], asks: dict[int, int], buy_room: int, sell_room: int, product: Symbol) -> list[Order]:
+    def _ash_make(self, bids: dict[int, int], asks: dict[int, int], buy_room: int, sell_room: int, product: Symbol, theo: float) -> list[Order]:
         orders: list[Order] = []
+
+        # one-sided book: mirror deepest liquidity from the other side around theo
+        if not bids and asks and buy_room > 0:
+            deepest_ask = max(asks)  # farthest-out ask
+            mirror_bid = int(round(2 * theo - deepest_ask))
+            orders.append(Order(product, mirror_bid, buy_room))
+            return orders
+        
+        if not asks and bids and sell_room > 0:
+            deepest_bid = min(bids)  # farthest-out bid
+            mirror_ask = int(round(2 * theo - deepest_bid))
+            orders.append(Order(product, mirror_ask, -sell_room))
+            return orders
+        
         if not bids or not asks:
             return orders
 
