@@ -173,8 +173,8 @@ class Trader:
                     trader_state["ash_wall_mid"] = (wall_bid + wall_ask) / 2.0
                 anchor = trader_state.get("ash_wall_mid", float(self.ASH_ANCHOR_SEED))
                 orders = self._trade_ash(order_depth, pos, limit, product, anchor)
-            elif product == "INTARIAN_PEPPER_ROOT":
-                orders = self._trade_pepper(order_depth, pos, limit, product, state.timestamp, trader_state)
+            # elif product == "INTARIAN_PEPPER_ROOT":
+            #     orders = self._trade_pepper(order_depth, pos, limit, product, state.timestamp, trader_state)
 
             result[product] = orders
 

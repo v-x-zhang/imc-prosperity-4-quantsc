@@ -5,4 +5,7 @@ venv/
 round-1/submissions
 round-1/backtests
 
+round-2/submissions
+round-2/backtests
+
 .DS_Store
